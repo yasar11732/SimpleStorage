@@ -19,16 +19,22 @@ namespace SimpleStorage
         }
 
         private _DirectoryEntry _wrapped;
+
+        /// <summary>
+        /// 64 bit hash key
+        /// </summary>
         public ulong Key
         {
             get { return _wrapped.Key; }
             set { _wrapped.Key = value; }
         }
 
+        /// <summary>
+        /// Gets the number of ticks that 
+        /// </summary>
         public long CreationTime
         {
             get { return _wrapped.CreationTime; }
-            set { _wrapped.CreationTime = value; }
         }
 
         public uint FirstSector
