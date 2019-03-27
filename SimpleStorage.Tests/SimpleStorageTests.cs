@@ -3,6 +3,7 @@ using System;
 using System.IO;
 using System.IO.Abstractions.TestingHelpers;
 using System.Runtime.Serialization.Formatters.Binary;
+using System.Text;
 
 namespace SimpleStorage.Tests
 {
@@ -72,7 +73,8 @@ namespace SimpleStorage.Tests
         public void Collection_CreatesDefaultFiles()
         {
             Database d = new Database(null);
-            d.Put("test_collection", 0, null);
+
+            d.Put("test_collection","Yaşar", new byte[24]);
             var _data_dir = d.data_directory;
             var index_location = Path.Combine(_data_dir, "test_collection.index");
             var data_location = Path.Combine(_data_dir, "test_collection.data");

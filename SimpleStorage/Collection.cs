@@ -32,12 +32,16 @@ namespace SimpleStorage
             public uint mask;
         }
 
+        
+
         [StructLayout(LayoutKind.Sequential)]
         private struct _AllocHeader
         {
             public int used;
             public int cap;
         }
+
+        private readonly int _sizeof_col_hdr = Marshal.SizeOf(typeof(_CollectionHeader));
 
         public Collection(string db_root, string collection_name)
         {
@@ -96,6 +100,76 @@ namespace SimpleStorage
             }
 
 
+        }
+
+        private _CollectionHeader ReadHeader()
+        {
+            byte[] hdr_bytes = new byte[_sizeof_col_hdr];
+
+            using (var index_accessor = mm_index.CreateViewStream())
+            {
+                if (index_accessor.Read(hdr_bytes, 0, _sizeof_col_hdr) != _sizeof_col_hdr)
+                {
+                    throw new IOException();
+                }
+            }
+
+            return StructTools.RawDeserialize<_CollectionHeader>(hdr_bytes, 0);
+        }
+
+        private uint StoreData(byte[] data)
+        {
+            return 5;
+        }
+
+        private bool GetKeySlot(_CollectionHeader hdr, ulong key, out MemoryMappedViewStream s)
+        {
+
+            for (uint _i = hdr.mask & (uint)key; ; _i = (5 * _i + 1) & (uint)key)
+            {
+                s = mm_index.CreateViewStream(_sizeof_col_hdr + (_i * DirectoryEntry.RawSize), DirectoryEntry.RawSize);
+                var dir_entry_bytes = new byte[DirectoryEntry.RawSize];
+
+                s.Read(dir_entry_bytes, 0, DirectoryEntry.RawSize);
+                s.Seek(0, SeekOrigin.Begin);
+
+                DirectoryEntry e = new DirectoryEntry(dir_entry_bytes, 0);
+
+                // empty entry we can store to this address
+                if (e.FirstSector == 0 )
+                {
+                    return false;
+                }
+
+                if(e.Key == key)
+                {
+                    return true;
+                }
+            }
+        }
+        /// <summary>
+        /// store a key in collection
+        /// </summary>
+        /// <param name="key">key</param>
+        /// <param name="data">value</param>
+        /// <returns></returns>
+        public bool Put(ulong key, byte[] data)
+        {
+            // - Find an empty slot
+            var hdr = ReadHeader();
+            MemoryMappedViewStream s;
+            if(GetKeySlot(hdr, key, out s))
+            {
+                throw new ArgumentException("Slot is alredy used");
+            } else
+            {
+                // we got a free slot
+                DirectoryEntry e = new DirectoryEntry(key, StoreData(data), (uint)data.Length);
+                byte[] e_bytes = e.Serialize();
+                s.Write(e_bytes, 0, e_bytes.Length);
+                s.Dispose();
+            }
+            return true;
         }
 
         public void Dispose()

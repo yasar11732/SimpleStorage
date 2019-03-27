@@ -18,6 +18,8 @@ namespace SimpleStorage
             public uint Lengh;
         }
 
+        public static readonly int RawSize = Marshal.SizeOf(typeof(_DirectoryEntry));
+
         private _DirectoryEntry _wrapped;
 
         /// <summary>

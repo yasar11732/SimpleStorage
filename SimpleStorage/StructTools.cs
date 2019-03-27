@@ -36,5 +36,10 @@ namespace SimpleStorage
             Marshal.FreeHGlobal(buffer);
             return rawDatas;
         }
+
+        public static int RawSize(object anything)
+        {
+            return Marshal.SizeOf(anything);
+        }
     }
 }

@@ -61,8 +61,9 @@ namespace SimpleStorage
         /// <param name="collection">Name of the collection to use, will be automatically created the first time it is accessed</param>
         /// <param name="key">64 bit hash value that will be used to retrieve the data</param>
         /// <param name="data">Data to save</param>
-        public void Put(string collection, UInt64 key, byte[] data)
+        public void Put(string collection, string key, byte[] data)
         {
+            ulong hash = FNV64.Compute(Encoding.UTF8.GetBytes(key));
             Collection _c = null;
 
             if(!_collections.TryGetValue(collection, out _c))
@@ -71,7 +72,10 @@ namespace SimpleStorage
                 _collections[collection] = _c;
             }
 
-
+            lock(_c)
+            {
+                _c.Put(hash, data);
+            }
         }
 
         /// <summary>
