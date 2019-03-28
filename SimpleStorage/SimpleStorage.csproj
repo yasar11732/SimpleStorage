@@ -48,8 +48,6 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Collection.cs" />
-    <Compile Include="Crc64.cs" />
-    <Compile Include="DirectoryEntry.cs" />
     <Compile Include="Database.cs" />
     <Compile Include="FNV64.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

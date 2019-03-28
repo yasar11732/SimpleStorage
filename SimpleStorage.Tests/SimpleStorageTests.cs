@@ -52,29 +52,33 @@ namespace SimpleStorage.Tests
             Assert.That(Directory.Exists(d.data_directory), Is.True);
         }
 
-        [Test]
-        public void DirectoryEntry_CanSerializeDeserialize([Random(2)] ulong key, [Random(2)] uint sector, [Random(2)] uint length)
-        {
-            DirectoryEntry d = new DirectoryEntry(key, sector, length);
-            DirectoryEntry clone;
-            byte[] buffer;
 
-            buffer = d.Serialize();
-            clone = new DirectoryEntry(buffer, 0);
-
-            Assert.That(buffer.Length, Is.EqualTo(24));
-            Assert.That(clone.Key, Is.EqualTo(d.Key));
-            Assert.That(clone.FirstSector, Is.EqualTo(d.FirstSector));
-            Assert.That(clone.Lengh, Is.EqualTo(d.Lengh));
-            Assert.That(clone.CreationTime, Is.EqualTo(d.CreationTime));
-        }
 
         [Test]
+        [NonParallelizable]
         public void Collection_CreatesDefaultFiles()
         {
             Database d = new Database(null);
+            var randombytes = new byte[1098];
+            Random r = new Random();
 
-            d.Put("test_collection","Yaşar", new byte[24]);
+            r.NextBytes(randombytes);
+
+            d.Put("test_collection","Yaşar1", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!1"));
+            d.Put("test_collection", "Yaşar2", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!2"));
+            d.Put("test_collection", "Yaşar3", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!3"));
+            d.Put("test_collection", "Yaşar7", randombytes);
+            d.Put("test_collection", "Yaşar4", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!4"));
+            d.Put("test_collection", "Yaşar5", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!5"));
+            d.Put("test_collection", "Yaşar6", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!6"));
+
+            var testbytes = d.Get("test_collection","Yaşar7");
+            Assert.That(testbytes, Is.EqualTo(randombytes));
+
+            // d.Put("test_collection", "Yaşar7", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!7"));
+            // d.Put("test_collection", "Yaşar8", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!8"));
+            // d.Put("test_collection", "Yaşar9", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!9"));
+
             var _data_dir = d.data_directory;
             var index_location = Path.Combine(_data_dir, "test_collection.index");
             var data_location = Path.Combine(_data_dir, "test_collection.data");

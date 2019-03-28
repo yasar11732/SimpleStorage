@@ -66,11 +66,15 @@ namespace SimpleStorage
             ulong hash = FNV64.Compute(Encoding.UTF8.GetBytes(key));
             Collection _c = null;
 
-            if(!_collections.TryGetValue(collection, out _c))
+            lock(_collections)
             {
-                _c = new Collection(_data_directory, collection);
-                _collections[collection] = _c;
+                if (!_collections.TryGetValue(collection, out _c))
+                {
+                    _c = new Collection(_data_directory, collection);
+                    _collections[collection] = _c;
+                }
             }
+
 
             lock(_c)
             {
@@ -84,9 +88,23 @@ namespace SimpleStorage
         /// <param name="collection">Collection to search</param>
         /// <param name="key">Key to search for</param>
         /// <returns>Byte array containing the returned Data</returns>
-        public byte[] Get(string collection, UInt64 key)
+        public byte[] Get(string collection, string key)
         {
-            return null;
+            ulong hash = FNV64.Compute(Encoding.UTF8.GetBytes(key));
+            Collection _c = null;
+
+            lock (_collections)
+            {
+                if (!_collections.TryGetValue(collection, out _c))
+                {
+                    throw new ArgumentException("Collection not found");
+                }
+            }
+
+            lock(_c)
+            {
+                return _c.Get(hash);
+            }
         }
 
         /// <summary>
