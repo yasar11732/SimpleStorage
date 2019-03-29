@@ -8,14 +8,14 @@ namespace SimpleStorage
 {
     public class FNV64
     {
-        public static ulong Compute(byte[] s)
+        public static uint Compute(byte[] s)
         {
-            ulong hash = 14695981039346656037;
+            uint hash = 2166136261;
             int array_size = s.Length;
             for(int i = 0; i < array_size; i++)
             {
                 hash ^= s[i];
-                hash *= 1099511628211;
+                hash *= 16777619;
             }
 
             return hash;

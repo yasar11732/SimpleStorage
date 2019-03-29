@@ -56,39 +56,62 @@ namespace SimpleStorage.Tests
 
         [Test]
         [NonParallelizable]
-        public void Collection_CreatesDefaultFiles()
+        public void Collection_PutGetRemove()
         {
             Database d = new Database(null);
-            var randombytes = new byte[1098];
             Random r = new Random();
 
-            r.NextBytes(randombytes);
+            var randombytes1 = new byte[r.Next(1, 8192)];
+            var randombytes2 = new byte[r.Next(1, 8192)];
+            var randombytes3 = new byte[r.Next(1, 8192)];
+            var randombytes4 = new byte[r.Next(1, 8192)];
+            var randombytes5 = new byte[r.Next(1, 8192)];
+            var randombytes6 = new byte[r.Next(1, 8192)];
+            var randombytes7 = new byte[r.Next(1, 8192)];
+            var randombytes8 = new byte[r.Next(1, 8192)];
+            var randombytes9 = new byte[r.Next(1, 8192)];
+            var randombytes10 = new byte[r.Next(1, 8192)];
 
-            d.Put("test_collection","Yaşar1", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!1"));
-            d.Put("test_collection", "Yaşar2", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!2"));
-            d.Put("test_collection", "Yaşar3", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!3"));
-            d.Put("test_collection", "Yaşar7", randombytes);
-            d.Put("test_collection", "Yaşar4", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!4"));
-            d.Put("test_collection", "Yaşar5", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!5"));
-            d.Put("test_collection", "Yaşar6", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!6"));
+            r.NextBytes(randombytes1);
+            r.NextBytes(randombytes2);
+            r.NextBytes(randombytes3);
+            r.NextBytes(randombytes4);
+            r.NextBytes(randombytes5);
+            r.NextBytes(randombytes6);
+            r.NextBytes(randombytes7);
+            r.NextBytes(randombytes8);
+            r.NextBytes(randombytes9);
+            r.NextBytes(randombytes10);
 
-            var testbytes = d.Get("test_collection","Yaşar7");
-            Assert.That(testbytes, Is.EqualTo(randombytes));
+            d.Put("test", "key1", randombytes1);
+            d.Put("test", "key2", randombytes2);
+            d.Put("test", "key3", randombytes3);
+            d.Remove("test", "key2");
 
-            // d.Put("test_collection", "Yaşar7", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!7"));
-            // d.Put("test_collection", "Yaşar8", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!8"));
-            // d.Put("test_collection", "Yaşar9", Encoding.UTF8.GetBytes("Bunu yazan tosun, okuyana, muhahahah!!!9"));
+            d.Put("test", "key4", randombytes4);
+            d.Put("test", "key5", randombytes5);
+            d.Put("test", "key6", randombytes6);
+            d.Remove("test", "key5");
 
-            var _data_dir = d.data_directory;
-            var index_location = Path.Combine(_data_dir, "test_collection.index");
-            var data_location = Path.Combine(_data_dir, "test_collection.data");
-            var alloc_location = Path.Combine(_data_dir, "test_collection.alloc");
+            d.Put("test", "key7", randombytes7);
+            d.Put("test", "key8", randombytes8);
+            d.Put("test", "key9", randombytes9);
+            d.Remove("test", "key8");
 
-            Assert.That(index_location, Does.Exist);
-            Assert.That(data_location, Does.Exist);
-            Assert.That(alloc_location, Does.Exist);
+            d.Put("test", "key10", randombytes10);
 
-            d.Dispose();
+            Assert.That(d.Get("test", "key1"), Is.EqualTo(randombytes1));
+            // Assert.That(d.Get("test", "key2"), Is.EqualTo(randombytes2));
+            Assert.That(d.Get("test", "key3"), Is.EqualTo(randombytes3));
+            Assert.That(d.Get("test", "key4"), Is.EqualTo(randombytes4));
+            // Assert.That(d.Get("test", "key5"), Is.EqualTo(randombytes5));
+            Assert.That(d.Get("test", "key6"), Is.EqualTo(randombytes6));
+            Assert.That(d.Get("test", "key7"), Is.EqualTo(randombytes7));
+            // Assert.That(d.Get("test", "key8"), Is.EqualTo(randombytes8));
+            Assert.That(d.Get("test", "key9"), Is.EqualTo(randombytes9));
+            Assert.That(d.Get("test", "key10"), Is.EqualTo(randombytes10));
+
+
             // Directory.Delete(_data_dir, true);
         }
 

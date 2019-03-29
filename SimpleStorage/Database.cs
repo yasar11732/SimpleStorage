@@ -63,7 +63,6 @@ namespace SimpleStorage
         /// <param name="data">Data to save</param>
         public void Put(string collection, string key, byte[] data)
         {
-            ulong hash = FNV64.Compute(Encoding.UTF8.GetBytes(key));
             Collection _c = null;
 
             lock(_collections)
@@ -78,7 +77,7 @@ namespace SimpleStorage
 
             lock(_c)
             {
-                _c.Put(hash, data);
+                _c.Put(key, data);
             }
         }
 
@@ -90,7 +89,6 @@ namespace SimpleStorage
         /// <returns>Byte array containing the returned Data</returns>
         public byte[] Get(string collection, string key)
         {
-            ulong hash = FNV64.Compute(Encoding.UTF8.GetBytes(key));
             Collection _c = null;
 
             lock (_collections)
@@ -103,7 +101,7 @@ namespace SimpleStorage
 
             lock(_c)
             {
-                return _c.Get(hash);
+                return _c.Get(key);
             }
         }
 
@@ -112,9 +110,23 @@ namespace SimpleStorage
         /// </summary>
         /// <param name="collection">Collection to search</param>
         /// <param name="key">Key to remove</param>
-        public void Remove(string collection, UInt64 key)
+        public void Remove(string collection, string key)
         {
+            Collection _c = null;
 
+            lock (_collections)
+            {
+                if (!_collections.TryGetValue(collection, out _c))
+                {
+                    throw new ArgumentException("Collection not found");
+                }
+            }
+
+
+            lock(_c)
+            {
+                _c.Remove(key);
+            }
         }
 
         public void Dispose()

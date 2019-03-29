@@ -24,10 +24,13 @@ namespace SimpleStorage
         [StructLayout(LayoutKind.Sequential)]
         public struct DirectoryEntry
         {
-            public ulong Key;
-            public long CreationTime;
-            public uint FirstSector;
-            public uint Lengh;
+            public uint hash;
+            // if keySector is zero, this slot is not actively used
+            public uint keySector;
+            public long cTime;
+            // if dataSector is zero, this slot was never used
+            public uint dataSector;
+            public uint length;
         }
 
 
@@ -49,14 +52,25 @@ namespace SimpleStorage
         [StructLayout(LayoutKind.Sequential)]
         private struct _AllocHeader
         {
-            public int used;
-            public int cap;
+            public uint used;
+            public uint cap;
         }
 
-        private readonly int _sizeof_col_hdr = Marshal.SizeOf(typeof(_CollectionHeader));
-        private readonly int _sizeof_alloc_hdr = Marshal.SizeOf(typeof(_AllocHeader));
-        private readonly int _sizeof_dir_entry = Marshal.SizeOf(typeof(DirectoryEntry));
+        private readonly int __sizeof_col_hdr = Marshal.SizeOf(typeof(_CollectionHeader));
+        private readonly int __sizeof_alloc_hdr = Marshal.SizeOf(typeof(_AllocHeader));
+        private readonly int __sizeof_dir_entry = Marshal.SizeOf(typeof(DirectoryEntry));
+        private readonly int __sizeof_uint = Marshal.SizeOf(typeof(uint));
 
+        private uint DirEntryPosFromIndex(uint index)
+        {
+            return Convert.ToUInt32(__sizeof_col_hdr + index * __sizeof_dir_entry);
+        }
+
+        private uint AllocPosFromIndex(uint index)
+        {
+            return Convert.ToUInt32(__sizeof_alloc_hdr + index * __sizeof_uint);
+
+        }
         private string index_path;
         private string data_path;
         private string alloc_path;
@@ -94,9 +108,9 @@ namespace SimpleStorage
                     acc.Write<_CollectionHeader>(0, ref hdr);
 
                     var empty_entry_data = CreateDirectoryEntry();
-                    for(var i = 0; i < 8; i++)
+                    for(uint i = 0; i < 8; i++)
                     {
-                        acc.Write<DirectoryEntry>(_sizeof_col_hdr + i * _sizeof_dir_entry, ref empty_entry_data);
+                        acc.Write<DirectoryEntry>(DirEntryPosFromIndex(i), ref empty_entry_data);
                     }
                 }
 
@@ -111,12 +125,10 @@ namespace SimpleStorage
                     hdr.cap = 8;
 
                     acc.Write<_AllocHeader>(0, ref hdr);
-                    int pos = _sizeof_alloc_hdr;
                     var _sizeof_int = Marshal.SizeOf(typeof(uint));
-                    for(var i = 0; i < hdr.cap; i++)
+                    for(uint i = 0; i < hdr.cap; i++)
                     {
-                        acc.Write(pos, (uint)0);
-                        pos += _sizeof_int;
+                        acc.Write(AllocPosFromIndex(i), (uint)0);
                     }
                 }
             }
@@ -124,14 +136,41 @@ namespace SimpleStorage
 
         }
 
+        public void Remove(string key)
+        {
+            // - Find an empty slot
+            var hdr = ReadHeader();
+
+            byte[] key_slice = new byte[256];
+            uint hash = hashAndTruncate(key, ref key_slice);
+
+            DirectoryEntry e;
+            var pos = GetKeySlot(hdr, hash, key_slice, out e);
+            if (e.keySector == 0) // key doesn't exist, nothing to remove
+                return;
+
+            
+            RemoveData(e.keySector);
+            e.keySector = 0;
+            RemoveData(e.dataSector);
+            using (var acc = mm_index.CreateViewAccessor())
+            {
+                acc.Write<DirectoryEntry>(pos, ref e);
+                hdr.used -= 1;
+                acc.Write<_CollectionHeader>(0, ref hdr);
+            }
+
+        }
+
         public DirectoryEntry CreateDirectoryEntry()
         {
             DirectoryEntry e = new DirectoryEntry()
             {
-                Key = 0,
-                CreationTime = DateTime.UtcNow.Ticks,
-                FirstSector = 0,
-                Lengh = 0
+                hash = 0,
+                keySector = 0,
+                cTime = DateTime.UtcNow.Ticks,
+                dataSector = 0,
+                length = 0
             };
 
             return e;
@@ -148,6 +187,25 @@ namespace SimpleStorage
             return hdr;
         }
 
+        private void RemoveData(uint first_sector)
+        {
+            uint next_sector = 0;
+            _AllocHeader hdr;
+            using (var acc = mm_alloc.CreateViewAccessor())
+            {
+                acc.Read<_AllocHeader>(0, out hdr);
+                while (first_sector != uint.MaxValue)
+                {
+                    var pos = AllocPosFromIndex(first_sector);
+                    next_sector = acc.ReadUInt32(pos);
+                    acc.Write(pos, (uint)0);
+                    hdr.used -= 1;
+                    first_sector = next_sector;
+                }
+                acc.Write<_AllocHeader>(0, ref hdr);
+            }
+
+        }
 
         private byte[] RetrieveData(uint first_sector, int length)
         {
@@ -165,89 +223,77 @@ namespace SimpleStorage
                     bytes_read += bytes_to_read;
                     length -= bytes_to_read;
 
-                    first_sector = acc_alloc.ReadUInt32(_sizeof_alloc_hdr + first_sector * 4);
+                    first_sector = acc_alloc.ReadUInt32(AllocPosFromIndex(first_sector));
                 }
             }
 
             return data;
         }
-        private uint StoreData(byte[] data)
+
+        private _AllocHeader PrepareSpace(uint num_chunks)
         {
-            // 1 - split data in 256 byte chunks
-            int q = data.Length / 256;
-            int r = data.Length % 256;
-            int num_chunks = q + (r > 0 ? 1 : 0);
-
-            List<byte[]> chunks = new List<byte[]>();
-            for(int i = 0; i < q; i++)
-            {
-                byte[] chunk = new byte[256];
-                Array.Copy(data, i * 256, chunk, 0, 256);
-                chunks.Add(chunk);
-            }
-
-            if(r > 0)
-            {
-                byte[] chunk = new byte[r];
-                Array.Copy(data, q * 256, chunk, 0, r);
-                chunks.Add(chunk);
-            }
-
-            int newsize = 0;
             _AllocHeader hdr;
+            uint target_cap;
             using (var acc = mm_alloc.CreateViewAccessor())
             {
-                byte[] hdr_data = new byte[_sizeof_alloc_hdr];
                 acc.Read<_AllocHeader>(0, out hdr);
-                newsize = hdr.used + chunks.Count;
+                target_cap = hdr.cap;
+                while (target_cap < hdr.used + num_chunks)
+                    target_cap = target_cap * 2;
+
+
             }
 
-            int newcap = hdr.cap;
-            // grow if necessary
-            if(newsize > hdr.cap)
-            {
-                while (newcap < newsize)
-                    newcap = 2 * newcap;
+            hdr.used = hdr.used + num_chunks;
 
+            if (target_cap > hdr.cap)
+            {
                 mm_alloc.Dispose();
                 mm_data.Dispose();
-                mm_data = MemoryMappedFile.CreateFromFile(data_path, FileMode.Open, null, 256 * newcap);
-                mm_alloc = MemoryMappedFile.CreateFromFile(alloc_path, FileMode.Open, null, _sizeof_alloc_hdr + newcap * 4);
-
+                mm_data = MemoryMappedFile.CreateFromFile(data_path, FileMode.Open, null, 256 * target_cap);
+                mm_alloc = MemoryMappedFile.CreateFromFile(alloc_path, FileMode.Open, null, AllocPosFromIndex(target_cap));
                 using (var mm_alloc_acc = mm_alloc.CreateViewAccessor())
                 {
                     uint val = 0;
-                    for(var i = hdr.cap; i < newcap; i++)
+                    for (uint i = hdr.cap; i < target_cap; i++)
                     {
-                        int pos = _sizeof_alloc_hdr + (i * 4);
-                        mm_alloc_acc.Write<uint>(pos, ref val);
+                        mm_alloc_acc.Write(AllocPosFromIndex(i),val);
                     }
-
-
+                    hdr.cap = target_cap;
                 }
-
             }
 
             using (var mm_alloc_acc = mm_alloc.CreateViewAccessor())
             {
-                hdr.cap = newcap;
-                hdr.used = newsize;
                 mm_alloc_acc.Write<_AllocHeader>(0, ref hdr);
             }
+
+            return hdr;
+        }
+        private uint StoreData(byte[] data)
+        {
+            // 1 - split data in 256 byte chunks
+            var num_chunks = data.Length / 256;
+            if (num_chunks * 256 < data.Length)
+                num_chunks++;
+
+            PrepareSpace((uint)num_chunks);
 
             uint first = 0;
             uint prev = 0;
             uint last = 0;
+            int bytes_rem = data.Length;
 
             using (var alloc_acc = mm_alloc.CreateViewAccessor())
             using (var data_acc = mm_data.CreateViewAccessor())
             {
-                foreach (var chunk in chunks)
+                while(bytes_rem > 0)
                 {
+                    int bytes_to_write = bytes_rem >= 256 ? 256 : bytes_rem;
                     while(true)
                     {
                         last++;
-                        var pos = _sizeof_alloc_hdr + (last * 4);
+                        var pos = AllocPosFromIndex(last);
                         uint val = alloc_acc.ReadUInt32(pos);
                         if(val == 0) // empty slot
                         {
@@ -256,20 +302,19 @@ namespace SimpleStorage
                                 first = last;
                             } else
                             {
-                                var pos2 = _sizeof_alloc_hdr + (prev * 4);
+                                var pos2 = AllocPosFromIndex(prev);
                                 alloc_acc.Write(pos2, last);
                             }
                             prev = last;
-                            data_acc.WriteArray(last * 256, chunk, 0, chunk.Length);
+                            data_acc.WriteArray(last * 256, data, (data.Length - bytes_rem), bytes_to_write);
+                            bytes_rem -= bytes_to_write;
                             break;
                         }
 
                     }
                 }
 
-                uint val2 = uint.MaxValue;
-                var ending_pos = _sizeof_alloc_hdr + (prev * 4);
-                alloc_acc.Write(ending_pos, val2);
+                alloc_acc.Write(AllocPosFromIndex(prev), uint.MaxValue);
 
             }
 
@@ -277,18 +322,84 @@ namespace SimpleStorage
             return first;
         }
 
-        private long GetKeySlot(_CollectionHeader hdr, ulong key, out DirectoryEntry e)
+        private void DictGrow(ref _CollectionHeader hdr)
         {
+            var orig_mask = hdr.mask;
+            hdr.mask = (2 * hdr.mask) + 1;
+            hdr.fill = hdr.used;
+
+            var next_size = DirEntryPosFromIndex(hdr.mask + 1);
+
+            var mm_index_next = MemoryMappedFile.CreateFromFile(index_path + ".new", FileMode.CreateNew, null, next_size);
+            using(var acc = mm_index_next.CreateViewAccessor())
+            using(var acc_old = mm_index.CreateViewAccessor())
+            {
+                // -- write new header
+                acc.Write<_CollectionHeader>(0, ref hdr);
+
+                // initialize empty slots
+                var entry = CreateDirectoryEntry();
+                var remaining = hdr.mask + 1;
+                for(uint i = 0; i < remaining; i++)
+                {
+                    acc.Write<DirectoryEntry>(DirEntryPosFromIndex(i), ref entry);
+                }
+
+                // copy slots from old index to new
+                remaining = orig_mask + 1;
+                for (uint i = 0; i < remaining; i++)
+                {
+                    acc_old.Read<DirectoryEntry>(DirEntryPosFromIndex(i), out entry);
+                    if(entry.keySector != 0)
+                    {
+                        DirectoryEntry slot;
+                        for(uint j = entry.hash&hdr.mask; ; j = (5*j+1)&hdr.mask)
+                        {
+                            var _pos = DirEntryPosFromIndex(j);
+                            acc.Read<DirectoryEntry>(_pos, out slot);
+                            if(slot.keySector == 0)
+                            {
+                                acc.Write<DirectoryEntry>(_pos, ref entry);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+            }
+
+            mm_index.Dispose();
+            mm_index_next.Dispose();
+
+            File.Delete(index_path + ".bk");
+            File.Move(index_path, index_path + ".bk");
+            File.Move(index_path + ".new", index_path);
+            mm_index = MemoryMappedFile.CreateFromFile(index_path, FileMode.Open);
+
+        }
+        private uint GetKeySlot(_CollectionHeader hdr, uint hash, byte[] key_slice, out DirectoryEntry e)
+        {
+            // key is truncated to 256 bytes when stored
+
+
             using (var acc = mm_index.CreateViewAccessor())
             {
-                for (long _i = hdr.mask & (uint)key; ; _i = (5 * _i + 1) & hdr.mask)
+                for (uint _i = hash&hdr.mask; ; _i = (5 * _i + 1) & hdr.mask)
                 {
-                    long pos = _sizeof_col_hdr + _i * _sizeof_dir_entry;
+                    var pos = DirEntryPosFromIndex(_i);
                     acc.Read<DirectoryEntry>(pos, out e);
                     
 
-                    // empty entry we can store to this address
-                    if (e.FirstSector == 0 || e.Key == key)
+                    // search ends when we hit a slot that was never used
+                    if (e.dataSector == 0)
+                    {
+                        return pos;
+                    }
+
+                    // we have found a match
+                    if(e.keySector != 0
+                       && e.hash == hash
+                       && key_slice.SequenceEqual(RetrieveData(e.keySector, 256)))
                     {
                         return pos;
                     }
@@ -297,49 +408,69 @@ namespace SimpleStorage
             }
 
         }
+
+        private uint hashAndTruncate(string key, ref byte[] key_slice)
+        {
+            Encoding.UTF8.GetBytes(key).Take(256).ToArray().CopyTo(key_slice, 0);
+            return FNV64.Compute(Encoding.UTF8.GetBytes(key));
+        }
         /// <summary>
         /// store a key in collection
         /// </summary>
         /// <param name="key">key</param>
         /// <param name="data">value</param>
         /// <returns></returns>
-        public bool Put(ulong key, byte[] data)
+        public bool Put(string key, byte[] data)
         {
-            // - Find an empty slot
+            byte[] key_slice = new byte[256];
+            uint hash = hashAndTruncate(key, ref key_slice);
+
             var hdr = ReadHeader();
+            if ((double)hdr.fill / (double)hdr.mask > 0.65)
+            {
+                DictGrow(ref hdr);
+            }
 
             DirectoryEntry e;
-            var pos = GetKeySlot(hdr, key, out e);
-            if(e.Key != 0)
+            var pos = GetKeySlot(hdr, hash, key_slice, out e);
+            if(e.dataSector != 0)
                 throw new ArgumentException("Slot is alredy used");
-
+            
+            
 
             using (var acc = mm_index.CreateViewAccessor())
             {
                 e = new DirectoryEntry()
                 {
-                    Key = key,
-                    CreationTime = DateTime.UtcNow.Ticks,
-                    FirstSector = StoreData(data),
-                    Lengh = (uint)data.Length
+                    hash = hash,
+                    keySector = StoreData(key_slice),
+                    cTime = DateTime.UtcNow.Ticks,
+                    dataSector = StoreData(data),
+                    length = (uint)data.Length
                 };
 
                 acc.Write<DirectoryEntry>(pos, ref e);
+                hdr.fill += 1;
+                hdr.used += 1;
+                acc.Write<_CollectionHeader>(0, ref hdr);
             }
 
             return true;
         }
 
-        public byte[] Get(ulong key)
+        public byte[] Get(string key)
         {
+            byte[] key_slice = new byte[256];
+            uint hash = hashAndTruncate(key, ref key_slice);
+
             var hdr = ReadHeader();
 
             DirectoryEntry e;
-            var pos = GetKeySlot(hdr, key, out e);
-            if (e.Key == 0)
+            var pos = GetKeySlot(hdr, hash, key_slice, out e);
+            if (e.dataSector == 0)
                 throw new ArgumentException("Not Found");
 
-            return RetrieveData(e.FirstSector, (int)e.Lengh);
+            return RetrieveData(e.dataSector, (int)e.length);
         }
 
         public void Dispose()
