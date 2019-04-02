@@ -95,7 +95,8 @@ namespace SimpleStorage
             {
                 if (!_collections.TryGetValue(collection, out _c))
                 {
-                    throw new ArgumentException("Collection not found");
+                    _c = new Collection(_data_directory, collection);
+                    _collections[collection] = _c;
                 }
             }
 
@@ -118,7 +119,8 @@ namespace SimpleStorage
             {
                 if (!_collections.TryGetValue(collection, out _c))
                 {
-                    throw new ArgumentException("Collection not found");
+                    _c = new Collection(_data_directory, collection);
+                    _collections[collection] = _c;
                 }
             }
 
@@ -129,6 +131,27 @@ namespace SimpleStorage
             }
         }
 
+        /// <summary>
+        /// Removes all keys older than specified time span
+        /// </summary>
+        public void RemoveOlderThan(string collection, TimeSpan s)
+        {
+            Collection _c = null;
+
+            lock (_collections)
+            {
+                if (!_collections.TryGetValue(collection, out _c))
+                {
+                    throw new ArgumentException("Collection not found");
+                }
+            }
+
+
+            lock (_c)
+            {
+                _c.RemoveOlderThan(s);
+            }
+        }
         public void Dispose()
         {
             foreach(var _c in _collections.Keys)

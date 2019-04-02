@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using System.IO.MemoryMappedFiles;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -15,405 +14,467 @@ namespace SimpleStorage
     /// </summary>
     public class Collection : IDisposable
     {
-        //used for serializing
-
-        private MemoryMappedFile mm_index = null;
-        private MemoryMappedFile mm_data = null;
-        private MemoryMappedFile mm_alloc = null;
-
-        [StructLayout(LayoutKind.Sequential)]
-        public struct DirectoryEntry
+        private class Index
         {
-            public uint hash;
-            // if keySector is zero, this slot is not actively used
-            public uint keySector;
-            public long cTime;
-            // if dataSector is zero, this slot was never used
-            public uint dataSector;
-            public uint length;
+            private byte[] _rawData;
+            private FileStream f;
+
+            private enum FieldOffset
+            {
+                MAGIC = 0,
+                USED  = 4,
+                FILL = 8,
+                MASK = 12
+            }
+
+            private enum FieldOffsetEntry
+            {
+                HASH = 0,
+                KEYSECTOR = 4,
+                DATASECTOR = 8,
+                DATALENGTH = 12,
+                CTIME = 16
+            }
+
+            private readonly byte _sizeof_header = 16;
+            private readonly byte _sizeof_entry = 24;
+
+            public uint used
+            {
+                get
+                {
+                    return BitConverter.ToUInt32(_rawData, (int)FieldOffset.USED);
+                }
+                set
+                {
+                    BitConverter.GetBytes(value).CopyTo(_rawData, (int)FieldOffset.USED);
+                }
+            }
+
+            public uint fill
+            {
+                get
+                {
+                    return BitConverter.ToUInt32(_rawData, (int)FieldOffset.FILL);
+                }
+                set
+                {
+                    BitConverter.GetBytes(value).CopyTo(_rawData, (int)FieldOffset.FILL);
+                }
+            }
+
+            public uint mask
+            {
+                get
+                {
+                    return BitConverter.ToUInt32(_rawData, (int)FieldOffset.MASK);
+                }
+                set
+                {
+                    BitConverter.GetBytes(value).CopyTo(_rawData, (int)FieldOffset.MASK);
+                }
+            }
+
+            public byte[] rawData
+            {
+                get
+                {
+                    return _rawData;
+                }
+            }
+
+            public Index(string index_path)
+            {
+                byte[] magic = Encoding.ASCII.GetBytes("STCL");
+                f = File.Open(index_path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+                if(f.Length == 0)
+                {
+                    // this file is created newly, initialize it
+                    _rawData = new byte[_sizeof_header + 8 * _sizeof_entry];
+                    magic.CopyTo(_rawData, 0);
+                    used = 0;
+                    fill = 0;
+                    mask = 7;
+                } else
+                {
+                    // check file type is correct
+                    _rawData = new byte[f.Length];
+                    f.Read(_rawData, 0, (int)f.Length);
+                    if(!_rawData.Take(4).SequenceEqual(magic))
+                    {
+                        throw new InvalidDataException();
+                    }
+                }
+            }
+
+            /// <summary>
+            /// Writes changes to underlying FileStream
+            /// </summary>
+            public void Flush()
+            {
+                f.Seek(0, SeekOrigin.Begin);
+                f.Write(_rawData, 0, _rawData.Length);
+            }
+
+            private int SlotPosition(int slot)
+            {
+                return _sizeof_header + slot * _sizeof_entry;
+            }
+
+
+
+            public uint GetHash(int index)
+            {
+                return BitConverter
+                    .ToUInt32(_rawData, SlotPosition(index) + (int)FieldOffsetEntry.HASH);
+            }
+
+            public void SetHash(int index, uint hash)
+            {
+                BitConverter
+                    .GetBytes(hash)
+                    .CopyTo(_rawData, SlotPosition(index) + (int)FieldOffsetEntry.HASH);
+            }
+
+            public uint GetKeySector(int index)
+            {
+                return BitConverter
+                    .ToUInt32(_rawData, SlotPosition(index) + (int)FieldOffsetEntry.KEYSECTOR);
+            }
+
+            public void SetKeySector(int index, uint keysector)
+            {
+                BitConverter
+                    .GetBytes(keysector)
+                    .CopyTo(_rawData, SlotPosition(index) + (int)FieldOffsetEntry.KEYSECTOR);
+            }
+
+            public uint GetDataSector(int index)
+            {
+                return BitConverter
+                    .ToUInt32(_rawData, SlotPosition(index) + (int)FieldOffsetEntry.DATASECTOR);
+            }
+
+            public void SetDataSector(int index, uint datasector)
+            {
+                BitConverter
+                    .GetBytes(datasector)
+                    .CopyTo(_rawData, SlotPosition(index) + (int)FieldOffsetEntry.DATASECTOR);
+            }
+
+            public uint GetDataLength(int index)
+            {
+                return BitConverter
+                    .ToUInt32(_rawData, SlotPosition(index) + (int)FieldOffsetEntry.DATALENGTH);
+            }
+
+            public void SetDataLength(int index, uint datalength)
+            {
+                BitConverter
+                    .GetBytes(datalength)
+                    .CopyTo(_rawData, SlotPosition(index) + (int)FieldOffsetEntry.DATALENGTH);
+            }
+
+            public long GetDataCreateTime(int index)
+            {
+                return BitConverter
+                    .ToUInt32(_rawData, SlotPosition(index) + (int)FieldOffsetEntry.CTIME);
+            }
+
+            public void SetDataCreateTime(int index, long createTime)
+            {
+                BitConverter
+                    .GetBytes(createTime)
+                    .CopyTo(_rawData, SlotPosition(index) + (int)FieldOffsetEntry.CTIME);
+            }
+
+            public void Grow()
+            {
+                var old_mask = mask;
+                var next_mask = (2 * old_mask) + 1;
+
+                var _rawDataOld = _rawData;
+                _rawData = new byte[_sizeof_header + (next_mask + 1) * _sizeof_entry];
+                Array.Copy(_rawDataOld, _rawData, _sizeof_header);
+                mask = next_mask;
+                fill = used;
+
+                for (int i = 0; i <= old_mask; i++)
+                {
+                    var slot_pos = SlotPosition(i);
+                    var key_sector_at_i = BitConverter
+                    .ToUInt32(_rawDataOld, slot_pos + (int)FieldOffsetEntry.KEYSECTOR);
+
+                    if (key_sector_at_i != 0)
+                    {
+                        var hash_at_i = BitConverter
+                            .ToUInt32(_rawDataOld, slot_pos + (int)FieldOffsetEntry.HASH);
+
+                        for (uint j = hash_at_i & next_mask; ; j = (5 * j + 1) & next_mask)
+                        {
+                            if (GetKeySector((int)j) == 0)
+                            {
+                                Array.Copy(_rawDataOld,
+                                    SlotPosition(i),
+                                    _rawData,
+                                    SlotPosition((int)j),
+                                    _sizeof_entry
+                                    );
+                                break;
+                            }
+                        }
+
+                    }
+                }
+
+            }
+
+            public void Dispose()
+            {
+                Flush();
+                f.Dispose();
+            }
         }
 
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct _CollectionHeader
+        private class AllocTable
         {
-            public byte magic1;
-            public byte magic2;
-            public byte magic3;
-            public byte magic4;
+            private byte[] _rawData;
+            private FileStream f;
+            private readonly byte sector_bytes = 64;
 
-            public uint fill;
-            public uint used;
-            public uint mask;
+            public AllocTable(string alloc_path)
+            {
+                f = File.Open(alloc_path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+                // created newly
+                if (f.Length == 0)
+                {
+                    _rawData = new byte[4];
+                } else
+                {
+                    _rawData = new byte[f.Length];
+                    f.Read(_rawData, 0, (int)f.Length);
+                }
+
+            }
+
+            public void Flush()
+            {
+                f.Seek(0, SeekOrigin.Begin);
+                f.Write(_rawData, 0, _rawData.Length);
+            }
+
+            private bool GetBit(int byte_index, int i)
+            {
+                return (_rawData[byte_index] & (1 << i)) != 0;
+            }
+
+            private void SetBit(int byte_index, int i)
+            {
+                _rawData[byte_index] = (byte)(_rawData[byte_index] | (1 << i));
+            }
+
+            private void UnsetBit(int byte_index, int i)
+            {
+                _rawData[byte_index] = (byte)(_rawData[byte_index] & ~(1 << i));
+            }
+
+
+            private bool IsSectorAllocated(int i)
+            {
+                // 1 - Get index of byte
+                var byte_index = i / 8;
+                var target_size = _rawData.Length;
+
+                while (target_size <= byte_index)
+                    target_size = target_size * 2;
+
+                if (target_size > _rawData.Length)
+                {
+                    Array.Resize(ref _rawData, target_size);
+                }
+
+                return GetBit(byte_index, i % 8);
+            }
+
+            private void FreeSector(int i)
+            {
+                UnsetBit(i / 8, i % 8);
+            }
+
+            private void AllocSector(int i)
+            {
+                var byte_index = i / 8;
+                var target_size = _rawData.Length;
+
+                while (target_size <= byte_index)
+                    target_size = target_size * 2;
+
+                if (target_size > _rawData.Length)
+                {
+                    Array.Resize(ref _rawData, target_size);
+                }
+
+                SetBit(byte_index, i % 8);
+            }
+
+            public uint Alloc(uint size)
+            {
+                uint num_sectors = (size - 1) / sector_bytes + 1;
+                uint starting_sector = 0;
+                uint allocated = 0;
+
+                for (int i = 1; allocated < num_sectors; i++)
+                {
+                    if(IsSectorAllocated(i))
+                    {
+                        starting_sector = 0;
+                        allocated = 0;
+                    } else
+                    {
+                        allocated++;
+                        if (starting_sector == 0)
+                            starting_sector = (uint)i;
+                    }
+                }
+
+                for(int i = 0; i < num_sectors; i++)
+                {
+                    AllocSector((int)starting_sector+i);
+                }
+
+                return starting_sector * sector_bytes;
+            }
+
+            public void Free(uint starting_sector, uint size)
+            {
+                starting_sector = starting_sector / sector_bytes;
+                uint num_sectors = (size - 1) / sector_bytes + 1;
+
+                for (int i = 0; i < num_sectors; i++)
+                {
+                    FreeSector((int)starting_sector + i);
+                }
+            }
+
+            internal void Dispose()
+            {
+                Flush();
+                f.Dispose();
+            }
         }
-
-        
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct _AllocHeader
-        {
-            public uint used;
-            public uint cap;
-        }
-
-        private readonly int __sizeof_col_hdr = Marshal.SizeOf(typeof(_CollectionHeader));
-        private readonly int __sizeof_alloc_hdr = Marshal.SizeOf(typeof(_AllocHeader));
-        private readonly int __sizeof_dir_entry = Marshal.SizeOf(typeof(DirectoryEntry));
-        private readonly int __sizeof_uint = Marshal.SizeOf(typeof(uint));
-
-        private uint DirEntryPosFromIndex(uint index)
-        {
-            return Convert.ToUInt32(__sizeof_col_hdr + index * __sizeof_dir_entry);
-        }
-
-        private uint AllocPosFromIndex(uint index)
-        {
-            return Convert.ToUInt32(__sizeof_alloc_hdr + index * __sizeof_uint);
-
-        }
-        private string index_path;
-        private string data_path;
-        private string alloc_path;
+        private Index _index;
+        private AllocTable _alloc;
+        private FileStream _data;
 
         public Collection(string db_root, string collection_name)
         {
-            index_path = Path.Combine(db_root, collection_name + ".index");
-            data_path = Path.Combine(db_root, collection_name + ".data");
-            alloc_path = Path.Combine(db_root, collection_name + ".alloc");
+            _index = new Index(Path.Combine(db_root, collection_name + ".index"));
+            _alloc = new AllocTable(Path.Combine(db_root, collection_name + ".alloc"));
+            _data = File.Open(Path.Combine(db_root, collection_name + ".data"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
 
-            
-            try
+
+        }
+
+        /// <summary>
+        /// Removes all entries created before a certain time
+        /// </summary>
+        /// <param name="ticks"></param>
+        public void RemoveOlderThan(TimeSpan s)
+        {
+            var ticks = DateTime.UtcNow.Subtract(s).Ticks;
+
+            uint num_slots = _index.mask;
+
+            for (int i = 0; i <= num_slots; i++)
             {
-                // open existing collection
-                mm_index = MemoryMappedFile.CreateFromFile(index_path);
-                mm_data = MemoryMappedFile.CreateFromFile(data_path);
-                mm_alloc = MemoryMappedFile.CreateFromFile(alloc_path);
-            }
-            catch (FileNotFoundException)
-            {
-                // create new collection
-                mm_index = MemoryMappedFile.CreateFromFile(index_path, FileMode.CreateNew, null, 208);
-                using (var acc = mm_index.CreateViewAccessor())
+                var key_sector = _index.GetKeySector(i);
+
+                if (key_sector != 0 && _index.GetDataCreateTime(i) < ticks)
                 {
-                    var hdr = new _CollectionHeader();
-                    byte[] magic = Encoding.ASCII.GetBytes("STCL");
-                    hdr.magic1 = magic[0];
-                    hdr.magic2 = magic[1];
-                    hdr.magic3 = magic[2];
-                    hdr.magic4 = magic[3];
-                    hdr.used = 0;
-                    hdr.fill = 0;
-                    hdr.mask = 7;
-
-                    acc.Write<_CollectionHeader>(0, ref hdr);
-
-                    var empty_entry_data = CreateDirectoryEntry();
-                    for(uint i = 0; i < 8; i++)
-                    {
-                        acc.Write<DirectoryEntry>(DirEntryPosFromIndex(i), ref empty_entry_data);
-                    }
-                }
-
-                mm_data = MemoryMappedFile.CreateFromFile(data_path, FileMode.CreateNew, null, 256 * 8);
-                mm_alloc = MemoryMappedFile.CreateFromFile(alloc_path, FileMode.CreateNew, null, 40);
-
-                using (var acc = mm_alloc.CreateViewAccessor())
-                {
-                    var hdr = new _AllocHeader();
-
-                    hdr.used = 1; // first segment is always used as a NULL segment
-                    hdr.cap = 8;
-
-                    acc.Write<_AllocHeader>(0, ref hdr);
-                    var _sizeof_int = Marshal.SizeOf(typeof(uint));
-                    for(uint i = 0; i < hdr.cap; i++)
-                    {
-                        acc.Write(AllocPosFromIndex(i), (uint)0);
-                    }
+                    RemoveData(key_sector, 256);
+                    _index.SetKeySector(i, 0);
+                    RemoveData(_index.GetDataSector(i), _index.GetDataLength(i));
+                    _index.used -= 1;
                 }
             }
 
-
+            _index.Flush();
         }
 
         public void Remove(string key)
         {
-            // - Find an empty slot
-            var hdr = ReadHeader();
 
-            byte[] key_slice = new byte[256];
-            uint hash = hashAndTruncate(key, ref key_slice);
+            var keybytes = new byte[256];
+            Encoding.UTF8.GetBytes(key).CopyTo(keybytes, 0);
 
-            DirectoryEntry e;
-            var pos = GetKeySlot(hdr, hash, key_slice, out e);
-            if (e.keySector == 0) // key doesn't exist, nothing to remove
+            uint hash = FNV64.Compute(keybytes);
+
+            uint pos;
+            if (!GetKeySlot(hash, keybytes, out pos))
                 return;
 
-            
-            RemoveData(e.keySector);
-            e.keySector = 0;
-            RemoveData(e.dataSector);
-            using (var acc = mm_index.CreateViewAccessor())
-            {
-                acc.Write<DirectoryEntry>(pos, ref e);
-                hdr.used -= 1;
-                acc.Write<_CollectionHeader>(0, ref hdr);
-            }
+            int _pos = (int)pos;
 
+            RemoveData(_index.GetKeySector(_pos), 256);
+            _index.SetKeySector(_pos, 0);
+            RemoveData(_index.GetDataSector(_pos), _index.GetDataLength(_pos));
+            _index.used -= 1;
+            _index.Flush();
         }
 
-        public DirectoryEntry CreateDirectoryEntry()
+        private void RemoveData(uint first_sector, uint size)
         {
-            DirectoryEntry e = new DirectoryEntry()
-            {
-                hash = 0,
-                keySector = 0,
-                cTime = DateTime.UtcNow.Ticks,
-                dataSector = 0,
-                length = 0
-            };
-
-            return e;
+            _alloc.Free(first_sector, size);
+            _alloc.Flush();
         }
-        private _CollectionHeader ReadHeader()
+
+        private void RetrieveData(uint first_sector, int length, byte[] buffer)
         {
-            _CollectionHeader hdr;
-
-            using (var index_acc = mm_index.CreateViewAccessor())
-            {
-                index_acc.Read<_CollectionHeader>(0, out hdr);
-            }
-
-            return hdr;
+            _data.Seek(first_sector, SeekOrigin.Begin);
+            _data.Read(buffer, 0, length);
         }
 
-        private void RemoveData(uint first_sector)
-        {
-            uint next_sector = 0;
-            _AllocHeader hdr;
-            using (var acc = mm_alloc.CreateViewAccessor())
-            {
-                acc.Read<_AllocHeader>(0, out hdr);
-                while (first_sector != uint.MaxValue)
-                {
-                    var pos = AllocPosFromIndex(first_sector);
-                    next_sector = acc.ReadUInt32(pos);
-                    acc.Write(pos, (uint)0);
-                    hdr.used -= 1;
-                    first_sector = next_sector;
-                }
-                acc.Write<_AllocHeader>(0, ref hdr);
-            }
-
-        }
-
-        private byte[] RetrieveData(uint first_sector, int length)
-        {
-            var data = new byte[length];
-            int bytes_read = 0;
-
-            using (var acc_alloc = mm_alloc.CreateViewAccessor())
-            using (var acc_data = mm_data.CreateViewAccessor())
-            {
-                while(length > 0)
-                {
-                    int bytes_to_read = length > 256 ? 256 : length;
-                    acc_data.ReadArray<byte>(first_sector * 256, data, bytes_read, bytes_to_read);
-
-                    bytes_read += bytes_to_read;
-                    length -= bytes_to_read;
-
-                    first_sector = acc_alloc.ReadUInt32(AllocPosFromIndex(first_sector));
-                }
-            }
-
-            return data;
-        }
-
-        private _AllocHeader PrepareSpace(uint num_chunks)
-        {
-            _AllocHeader hdr;
-            uint target_cap;
-            using (var acc = mm_alloc.CreateViewAccessor())
-            {
-                acc.Read<_AllocHeader>(0, out hdr);
-                target_cap = hdr.cap;
-                while (target_cap < hdr.used + num_chunks)
-                    target_cap = target_cap * 2;
-
-
-            }
-
-            hdr.used = hdr.used + num_chunks;
-
-            if (target_cap > hdr.cap)
-            {
-                mm_alloc.Dispose();
-                mm_data.Dispose();
-                mm_data = MemoryMappedFile.CreateFromFile(data_path, FileMode.Open, null, 256 * target_cap);
-                mm_alloc = MemoryMappedFile.CreateFromFile(alloc_path, FileMode.Open, null, AllocPosFromIndex(target_cap));
-                using (var mm_alloc_acc = mm_alloc.CreateViewAccessor())
-                {
-                    uint val = 0;
-                    for (uint i = hdr.cap; i < target_cap; i++)
-                    {
-                        mm_alloc_acc.Write(AllocPosFromIndex(i),val);
-                    }
-                    hdr.cap = target_cap;
-                }
-            }
-
-            using (var mm_alloc_acc = mm_alloc.CreateViewAccessor())
-            {
-                mm_alloc_acc.Write<_AllocHeader>(0, ref hdr);
-            }
-
-            return hdr;
-        }
         private uint StoreData(byte[] data)
         {
-            // 1 - split data in 256 byte chunks
-            var num_chunks = data.Length / 256;
-            if (num_chunks * 256 < data.Length)
-                num_chunks++;
-
-            PrepareSpace((uint)num_chunks);
-
-            uint first = 0;
-            uint prev = 0;
-            uint last = 0;
-            int bytes_rem = data.Length;
-
-            using (var alloc_acc = mm_alloc.CreateViewAccessor())
-            using (var data_acc = mm_data.CreateViewAccessor())
-            {
-                while(bytes_rem > 0)
-                {
-                    int bytes_to_write = bytes_rem >= 256 ? 256 : bytes_rem;
-                    while(true)
-                    {
-                        last++;
-                        var pos = AllocPosFromIndex(last);
-                        uint val = alloc_acc.ReadUInt32(pos);
-                        if(val == 0) // empty slot
-                        {
-                            if (first == 0)
-                            {
-                                first = last;
-                            } else
-                            {
-                                var pos2 = AllocPosFromIndex(prev);
-                                alloc_acc.Write(pos2, last);
-                            }
-                            prev = last;
-                            data_acc.WriteArray(last * 256, data, (data.Length - bytes_rem), bytes_to_write);
-                            bytes_rem -= bytes_to_write;
-                            break;
-                        }
-
-                    }
-                }
-
-                alloc_acc.Write(AllocPosFromIndex(prev), uint.MaxValue);
-
-            }
-
-
-            return first;
+            var pos = _alloc.Alloc((uint)data.Length);
+            _alloc.Flush();
+            _data.Seek(pos, SeekOrigin.Begin);
+            _data.Write(data, 0, data.Length);
+            return pos;
         }
 
-        private void DictGrow(ref _CollectionHeader hdr)
-        {
-            var orig_mask = hdr.mask;
-            hdr.mask = (2 * hdr.mask) + 1;
-            hdr.fill = hdr.used;
 
-            var next_size = DirEntryPosFromIndex(hdr.mask + 1);
 
-            var mm_index_next = MemoryMappedFile.CreateFromFile(index_path + ".new", FileMode.CreateNew, null, next_size);
-            using(var acc = mm_index_next.CreateViewAccessor())
-            using(var acc_old = mm_index.CreateViewAccessor())
-            {
-                // -- write new header
-                acc.Write<_CollectionHeader>(0, ref hdr);
-
-                // initialize empty slots
-                var entry = CreateDirectoryEntry();
-                var remaining = hdr.mask + 1;
-                for(uint i = 0; i < remaining; i++)
-                {
-                    acc.Write<DirectoryEntry>(DirEntryPosFromIndex(i), ref entry);
-                }
-
-                // copy slots from old index to new
-                remaining = orig_mask + 1;
-                for (uint i = 0; i < remaining; i++)
-                {
-                    acc_old.Read<DirectoryEntry>(DirEntryPosFromIndex(i), out entry);
-                    if(entry.keySector != 0)
-                    {
-                        DirectoryEntry slot;
-                        for(uint j = entry.hash&hdr.mask; ; j = (5*j+1)&hdr.mask)
-                        {
-                            var _pos = DirEntryPosFromIndex(j);
-                            acc.Read<DirectoryEntry>(_pos, out slot);
-                            if(slot.keySector == 0)
-                            {
-                                acc.Write<DirectoryEntry>(_pos, ref entry);
-                                break;
-                            }
-                        }
-                    }
-                }
-
-            }
-
-            mm_index.Dispose();
-            mm_index_next.Dispose();
-
-            File.Delete(index_path + ".bk");
-            File.Move(index_path, index_path + ".bk");
-            File.Move(index_path + ".new", index_path);
-            mm_index = MemoryMappedFile.CreateFromFile(index_path, FileMode.Open);
-
-        }
-        private uint GetKeySlot(_CollectionHeader hdr, uint hash, byte[] key_slice, out DirectoryEntry e)
+        private bool GetKeySlot(uint hash, byte[] key, out uint pos)
         {
             // key is truncated to 256 bytes when stored
 
+            var mask = _index.mask;
+            byte[] buffer = new byte[256];
 
-            using (var acc = mm_index.CreateViewAccessor())
+            for (pos = hash&mask; ; pos = (5 * pos + 1) & mask)
             {
-                for (uint _i = hash&hdr.mask; ; _i = (5 * _i + 1) & hdr.mask)
+                var datasector = _index.GetDataSector((int)pos);
+                // search ends when we hit a slot that was never used
+                if (datasector == 0)
                 {
-                    var pos = DirEntryPosFromIndex(_i);
-                    acc.Read<DirectoryEntry>(pos, out e);
-                    
-
-                    // search ends when we hit a slot that was never used
-                    if (e.dataSector == 0)
-                    {
-                        return pos;
-                    }
-
-                    // we have found a match
-                    if(e.keySector != 0
-                       && e.hash == hash
-                       && key_slice.SequenceEqual(RetrieveData(e.keySector, 256)))
-                    {
-                        return pos;
-                    }
-
+                    return false;
                 }
+
+                if (!(hash == _index.GetHash((int)pos)))
+                    continue;
+
+                RetrieveData(_index.GetKeySector((int)pos), 256, buffer);
+
+                // this key already exists in collection
+                if (key.SequenceEqual(buffer))
+                    return true;
+
             }
 
+
         }
 
-        private uint hashAndTruncate(string key, ref byte[] key_slice)
-        {
-            Encoding.UTF8.GetBytes(key).Take(256).ToArray().CopyTo(key_slice, 0);
-            return FNV64.Compute(Encoding.UTF8.GetBytes(key));
-        }
         /// <summary>
         /// store a key in collection
         /// </summary>
@@ -422,67 +483,61 @@ namespace SimpleStorage
         /// <returns></returns>
         public bool Put(string key, byte[] data)
         {
-            byte[] key_slice = new byte[256];
-            uint hash = hashAndTruncate(key, ref key_slice);
+            var keybytes = new byte[256];
+            Encoding.UTF8.GetBytes(key).CopyTo(keybytes, 0);
 
-            var hdr = ReadHeader();
-            if ((double)hdr.fill / (double)hdr.mask > 0.65)
+            uint hash = FNV64.Compute(keybytes);
+
+
+            if ((double)_index.fill / (double)_index.mask > 0.65)
             {
-                DictGrow(ref hdr);
+                _index.Grow();
             }
 
-            DirectoryEntry e;
-            var pos = GetKeySlot(hdr, hash, key_slice, out e);
-            if(e.dataSector != 0)
+            uint _pos;
+            if(GetKeySlot(hash, keybytes, out _pos))
                 throw new ArgumentException("Slot is alredy used");
-            
-            
 
-            using (var acc = mm_index.CreateViewAccessor())
-            {
-                e = new DirectoryEntry()
-                {
-                    hash = hash,
-                    keySector = StoreData(key_slice),
-                    cTime = DateTime.UtcNow.Ticks,
-                    dataSector = StoreData(data),
-                    length = (uint)data.Length
-                };
+            int pos = (int)_pos;
 
-                acc.Write<DirectoryEntry>(pos, ref e);
-                hdr.fill += 1;
-                hdr.used += 1;
-                acc.Write<_CollectionHeader>(0, ref hdr);
-            }
+            _index.SetHash(pos, hash);
+            _index.SetKeySector(pos, StoreData(keybytes));
+            _index.SetDataCreateTime(pos, DateTime.UtcNow.Ticks);
+            _index.SetDataSector(pos, StoreData(data));
+            _index.SetDataLength(pos, (uint)data.Length);
+
+            _index.fill += 1;
+            _index.used += 1;
+
+            _index.Flush();
 
             return true;
         }
 
         public byte[] Get(string key)
         {
-            byte[] key_slice = new byte[256];
-            uint hash = hashAndTruncate(key, ref key_slice);
+            var keybytes = new byte[256];
+            Encoding.UTF8.GetBytes(key).CopyTo(keybytes, 0);
 
-            var hdr = ReadHeader();
+            uint hash = FNV64.Compute(keybytes);
+            uint _pos;
 
-            DirectoryEntry e;
-            var pos = GetKeySlot(hdr, hash, key_slice, out e);
-            if (e.dataSector == 0)
+            if(!GetKeySlot(hash, keybytes, out _pos))
                 throw new ArgumentException("Not Found");
 
-            return RetrieveData(e.dataSector, (int)e.length);
+            int pos = (int)_pos;
+
+            var data_length = _index.GetDataLength(pos);
+            byte[] result = new byte[data_length];
+            RetrieveData(_index.GetDataSector(pos), (int)data_length, result);
+            return result;
         }
 
         public void Dispose()
         {
-            mm_index.Dispose();
-            mm_index = null;
-
-            mm_data.Dispose();
-            mm_data = null;
-
-            mm_alloc.Dispose();
-            mm_data = null;
+            _index.Dispose();
+            _alloc.Dispose();
+            _data.Dispose();
         }
     }
 }

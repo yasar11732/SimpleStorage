@@ -52,10 +52,13 @@ namespace SimpleStorage.Tests
             Assert.That(Directory.Exists(d.data_directory), Is.True);
         }
 
-
+        [Test]
+        public void Collection_RemoveOlderThan()
+        {
+            Database d = new Database(null);
+        }
 
         [Test]
-        [NonParallelizable]
         public void Collection_PutGetRemove()
         {
             Database d = new Database(null);
@@ -101,16 +104,15 @@ namespace SimpleStorage.Tests
             d.Put("test", "key10", randombytes10);
 
             Assert.That(d.Get("test", "key1"), Is.EqualTo(randombytes1));
-            // Assert.That(d.Get("test", "key2"), Is.EqualTo(randombytes2));
+            Assert.That(() => d.Get("test", "key2"), Throws.ArgumentException);
             Assert.That(d.Get("test", "key3"), Is.EqualTo(randombytes3));
             Assert.That(d.Get("test", "key4"), Is.EqualTo(randombytes4));
-            // Assert.That(d.Get("test", "key5"), Is.EqualTo(randombytes5));
+            Assert.That(() => d.Get("test", "key5"), Throws.ArgumentException);
             Assert.That(d.Get("test", "key6"), Is.EqualTo(randombytes6));
             Assert.That(d.Get("test", "key7"), Is.EqualTo(randombytes7));
-            // Assert.That(d.Get("test", "key8"), Is.EqualTo(randombytes8));
+            Assert.That(() => d.Get("test", "key8"), Throws.ArgumentException);
             Assert.That(d.Get("test", "key9"), Is.EqualTo(randombytes9));
             Assert.That(d.Get("test", "key10"), Is.EqualTo(randombytes10));
-
 
             // Directory.Delete(_data_dir, true);
         }
