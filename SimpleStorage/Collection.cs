@@ -239,8 +239,20 @@ namespace SimpleStorage
         private class AllocTable
         {
             private byte[] _rawData;
+            private readonly byte[] _zero = new byte[] { 0, 0, 0, 0 };
             private FileStream f;
-            private readonly byte sector_bytes = 64;
+            private uint brk;
+
+            /*
+             * Binary Format of Allocation Table
+             * First 4 byte is interpreted as 32-bit unsigned integer shows current length of data file
+             * Second 4 byte is left blank
+             * an array of free list entries follows;
+             * struct entry {
+             *    void * data
+             *    size_t size
+             * }
+             */
 
             public AllocTable(string alloc_path)
             {
@@ -248,120 +260,95 @@ namespace SimpleStorage
                 // created newly
                 if (f.Length == 0)
                 {
-                    _rawData = new byte[4];
+                    _rawData = new byte[16];
+                    
                 } else
                 {
                     _rawData = new byte[f.Length];
                     f.Read(_rawData, 0, (int)f.Length);
                 }
 
+                brk = BitConverter.ToUInt32(_rawData, 0);
+
+                // never return 0 from alloc, because it is used as null
+                // align it to 8 bytes, because of reasons
+                if (brk == 0)
+                    brk = 8;
+
             }
 
             public void Flush()
             {
                 f.Seek(0, SeekOrigin.Begin);
+                BitConverter.GetBytes(brk).CopyTo(_rawData, 0);
                 f.Write(_rawData, 0, _rawData.Length);
             }
 
-            private bool GetBit(int byte_index, int i)
-            {
-                return (_rawData[byte_index] & (1 << i)) != 0;
-            }
-
-            private void SetBit(int byte_index, int i)
-            {
-                _rawData[byte_index] = (byte)(_rawData[byte_index] | (1 << i));
-            }
-
-            private void UnsetBit(int byte_index, int i)
-            {
-                _rawData[byte_index] = (byte)(_rawData[byte_index] & ~(1 << i));
-            }
-
-
-            private bool IsSectorAllocated(int i)
-            {
-                // 1 - Get index of byte
-                var byte_index = i / 8;
-                var target_size = _rawData.Length;
-
-                while (target_size <= byte_index)
-                    target_size = target_size * 2;
-
-                if (target_size > _rawData.Length)
-                {
-                    Array.Resize(ref _rawData, target_size);
-                }
-
-                return GetBit(byte_index, i % 8);
-            }
-
-            private void FreeSector(int i)
-            {
-                UnsetBit(i / 8, i % 8);
-            }
-
-            private void AllocSector(int i)
-            {
-                var byte_index = i / 8;
-                var target_size = _rawData.Length;
-
-                while (target_size <= byte_index)
-                    target_size = target_size * 2;
-
-                if (target_size > _rawData.Length)
-                {
-                    Array.Resize(ref _rawData, target_size);
-                }
-
-                SetBit(byte_index, i % 8);
-            }
-
-            public uint Alloc(uint size)
-            {
-                uint num_sectors = (size - 1) / sector_bytes + 1;
-                uint starting_sector = 0;
-                uint allocated = 0;
-
-                for (int i = 1; allocated < num_sectors; i++)
-                {
-                    if(IsSectorAllocated(i))
-                    {
-                        starting_sector = 0;
-                        allocated = 0;
-                    } else
-                    {
-                        allocated++;
-                        if (starting_sector == 0)
-                            starting_sector = (uint)i;
-                    }
-                }
-
-                for(int i = 0; i < num_sectors; i++)
-                {
-                    AllocSector((int)starting_sector+i);
-                }
-
-                return starting_sector * sector_bytes;
-            }
-
-            public void Free(uint starting_sector, uint size)
-            {
-                starting_sector = starting_sector / sector_bytes;
-                uint num_sectors = (size - 1) / sector_bytes + 1;
-
-                for (int i = 0; i < num_sectors; i++)
-                {
-                    FreeSector((int)starting_sector + i);
-                }
-            }
-
-            internal void Dispose()
+            public void Dispose()
             {
                 Flush();
                 f.Dispose();
             }
+
+            private uint RoundUp(uint size)
+            {
+                if (size == 0)
+                    return 0;
+                uint p = 1;
+                while (p < size)
+                    p *= 2;
+                return p;
+            }
+
+            public uint Alloc(uint size)
+            {
+                size = RoundUp(size);
+                for(int i = 8; ; i+=8)
+                {
+                    uint data = BitConverter.ToUInt32(_rawData, i);
+                    uint length = BitConverter.ToUInt32(_rawData, i + 4);
+
+                    if (data == 0 && length == 0)
+                        break; // and of search, no free slots
+
+                    if (data == 0)
+                        continue;
+
+                    if(length == size)
+                    {
+                        // remove this node from free queue, and return
+                        _zero.CopyTo(_rawData, i);
+                        return data;
+                    }
+
+                }
+
+                // no hit from free list, allocate new space
+                var v = brk;
+                brk += size;
+                return v;
+            }
+
+            public void Free(uint data, uint length)
+            {
+                length = RoundUp(length);
+                int last_slot = _rawData.Length / 8;
+
+                for (int i = 8; ; i+=8)
+                {
+                    uint _data = BitConverter.ToUInt32(_rawData, i);
+                    if(_data == 0)
+                    {
+                        BitConverter.GetBytes(data).CopyTo(_rawData, i);
+                        BitConverter.GetBytes(length).CopyTo(_rawData, i + 4);
+                        if (i+8 >= _rawData.Length)
+                            Array.Resize(ref _rawData, 2 * _rawData.Length);
+                        return;
+                    }
+                }
+            }
         }
+
         private Index _index;
         private AllocTable _alloc;
         private FileStream _data;
@@ -496,18 +483,39 @@ namespace SimpleStorage
 
             uint _pos;
             if(GetKeySlot(hash, keybytes, out _pos))
-                throw new ArgumentException("Slot is alredy used");
+            {
+                // update existing slot
+                int pos = (int)_pos;
+                _alloc.Free(_index.GetDataSector(pos), _index.GetDataLength(pos));
+                _index.SetDataCreateTime(pos, DateTime.UtcNow.Ticks);
+                _index.SetDataSector(pos, StoreData(data));
+                _index.SetDataLength(pos, (uint)data.Length);
 
-            int pos = (int)_pos;
+            } else
+            {
+                // get key slot skips deleted entries, we should search for reusable slot
 
-            _index.SetHash(pos, hash);
-            _index.SetKeySector(pos, StoreData(keybytes));
-            _index.SetDataCreateTime(pos, DateTime.UtcNow.Ticks);
-            _index.SetDataSector(pos, StoreData(data));
-            _index.SetDataLength(pos, (uint)data.Length);
+                var mask = _index.mask;
+                for(uint __pos = hash&mask; ; __pos = (5 * __pos + 1) & mask)
+                {
+                    var pos = (int)__pos;
+                    if (_index.GetKeySector(pos) == 0)
+                    {
+                        
+                        _index.SetHash(pos, hash);
+                        _index.SetKeySector(pos, StoreData(keybytes));
+                        _index.SetDataCreateTime(pos, DateTime.UtcNow.Ticks);
+                        _index.SetDataSector(pos, StoreData(data));
+                        _index.SetDataLength(pos, (uint)data.Length);
 
-            _index.fill += 1;
-            _index.used += 1;
+                        break;
+                    }
+                }
+
+                _index.fill += 1;
+                _index.used += 1;
+
+            }
 
             _index.Flush();
 
@@ -522,8 +530,8 @@ namespace SimpleStorage
             uint hash = FNV64.Compute(keybytes);
             uint _pos;
 
-            if(!GetKeySlot(hash, keybytes, out _pos))
-                throw new ArgumentException("Not Found");
+            if (!GetKeySlot(hash, keybytes, out _pos))
+                return null;
 
             int pos = (int)_pos;
 

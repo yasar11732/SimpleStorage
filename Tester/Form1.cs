@@ -119,5 +119,49 @@ namespace Tester
 
             MessageBox.Show(String.Format("{0} hatalı sonuç", errors));
         }
+
+        private void button5_Click(object sender, EventArgs e)
+        {
+            string[] files = Directory.GetFiles(src);
+            string[] recent_files = new string[5];
+
+            var i = 0;
+            Random rnd = new Random();
+
+            using (var db = new SimpleStorage.Database(dest))
+            {
+                foreach (string f in files)
+                {
+                    i++;
+                    if (i % 17 == 0)
+                    {
+                        db.Remove("files", recent_files[rnd.Next(0, 4)]);
+                    }
+
+                    db.Put("files", f, File.ReadAllBytes(f));
+                    if(i % 3 == 0)
+                        recent_files[i % 5] = f;
+                }
+
+                MessageBox.Show("Finished insert/delete, validating data");
+                i = 0;
+                int k = 0;
+                foreach (string f in files)
+                {
+
+                    byte[] result = db.Get("files", f);
+                    if (result != null && !result.SequenceEqual(File.ReadAllBytes(f)))
+                        k++;
+                    else
+                        i++;
+
+
+                }
+                MessageBox.Show(String.Format("{0} başarılı, {1} hatalı", i, k));
+
+            }
+
+
+        }
     }
 }

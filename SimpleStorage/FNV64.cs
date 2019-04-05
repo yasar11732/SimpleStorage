@@ -20,5 +20,10 @@ namespace SimpleStorage
 
             return hash;
         }
+
+        public static uint Round(uint number)
+        {
+            return ((number + 2) >> 2) << 2;
+        }
     }
 }
