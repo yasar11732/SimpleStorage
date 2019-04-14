@@ -2,6 +2,7 @@
 using System;
 using System.IO;
 using System.IO.Abstractions.TestingHelpers;
+using System.Linq;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 
@@ -58,6 +59,14 @@ namespace SimpleStorage.Tests
             Database d = new Database(null);
         }
 
+        public static string RandomString(int length)
+        {
+            Random random = new Random();
+            const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            return new string(Enumerable.Repeat(chars, length)
+              .Select(s => s[random.Next(s.Length)]).ToArray());
+        }
+
         [Test]
         public void Collection_PutGetRemove()
         {
@@ -86,6 +95,10 @@ namespace SimpleStorage.Tests
             r.NextBytes(randombytes9);
             r.NextBytes(randombytes10);
 
+            var longkey = RandomString(300);
+
+            d.Put("test", longkey, new byte[1]);
+
             d.Put("test", "key1", randombytes1);
             d.Put("test", "key2", randombytes2);
             d.Put("test", "key3", randombytes3);
@@ -104,13 +117,13 @@ namespace SimpleStorage.Tests
             d.Put("test", "key10", randombytes10);
 
             Assert.That(d.Get("test", "key1"), Is.EqualTo(randombytes1));
-            Assert.That(() => d.Get("test", "key2"), Throws.ArgumentException);
+            Assert.That(d.Get("test", "key2"), Is.Null);
             Assert.That(d.Get("test", "key3"), Is.EqualTo(randombytes3));
             Assert.That(d.Get("test", "key4"), Is.EqualTo(randombytes4));
-            Assert.That(() => d.Get("test", "key5"), Throws.ArgumentException);
+            Assert.That(d.Get("test", "key5"), Is.Null);
             Assert.That(d.Get("test", "key6"), Is.EqualTo(randombytes6));
             Assert.That(d.Get("test", "key7"), Is.EqualTo(randombytes7));
-            Assert.That(() => d.Get("test", "key8"), Throws.ArgumentException);
+            Assert.That(d.Get("test", "key8"), Is.Null);
             Assert.That(d.Get("test", "key9"), Is.EqualTo(randombytes9));
             Assert.That(d.Get("test", "key10"), Is.EqualTo(randombytes10));
 

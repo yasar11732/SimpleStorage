@@ -24,7 +24,7 @@ namespace Tester
         private void button1_Click(object sender, EventArgs e)
         {
             var f = new FolderBrowserDialog();
-            f.RootFolder = Environment.SpecialFolder.MyDocuments;
+            f.RootFolder = Environment.SpecialFolder.ApplicationData;
             if(f.ShowDialog() == DialogResult.OK)
             {
                 src = f.SelectedPath;
@@ -35,7 +35,7 @@ namespace Tester
         private void button2_Click(object sender, EventArgs e)
         {
             var f = new FolderBrowserDialog();
-            f.RootFolder = Environment.SpecialFolder.MyDocuments;
+            f.RootFolder = Environment.SpecialFolder.ApplicationData;
             if (f.ShowDialog() == DialogResult.OK)
             {
                 dest = f.SelectedPath;
@@ -80,76 +80,117 @@ namespace Tester
 
         private void button4_Click(object sender, EventArgs e)
         {
-            string[] files = Directory.GetFiles(src);
-
-            Dictionary<string, byte[]> files_to_put = new Dictionary<string, byte[]>();
-            Dictionary<string, byte[]> results = new Dictionary<string, byte[]>();
+            var src_save = src;
+            var dbname = Path.GetFileName(src_save);
 
             int totalbytes = 0;
             int totalfiles = 0;
+            int not_found = 0;
+            int success = 0;
+            int error = 0;
 
-            foreach (string f in files)
-            {
-                files_to_put[f] = File.ReadAllBytes(f);
-                totalbytes += files_to_put[f].Length;
-                totalfiles++;
-            }
+            var stopwatch = new Stopwatch();
 
             using (var db = new SimpleStorage.Database(dest))
             {
-                var stopwatch = new Stopwatch();
-                stopwatch.Start();
-                foreach (var entry in files_to_put)
-                {
-                    results[entry.Key] = db.Get("files", entry.Key);
-                }
-                stopwatch.Stop();
 
-                MessageBox.Show(String.Format("{0} byte toplam boyutunda {1} dosya {2} milisaniyede okundu.", totalbytes, totalfiles, stopwatch.ElapsedMilliseconds));
+                foreach(string f in GetFiles(src))
+                {
+                    totalfiles++;
+                    var data = File.ReadAllBytes(f);
+                    var _f = f.Substring(src_save.Length + 1);
+
+                    stopwatch.Start();
+                    var response = db.Get(dbname, _f);
+                    stopwatch.Stop();
+                    if(response == null)
+                    {
+                        not_found++;
+                        continue;
+                    }
+                    totalbytes += response.Length;
+                    if (data.SequenceEqual(response))
+                        success++;
+                    else
+                        error++;
+
+                }
+
+                
             }
 
-            int errors = 0;
-            foreach(var entry in files_to_put)
+            MessageBox.Show(String.Format("{0} byte toplam boyutunda {1} dosya {2} milisaniyede okundu. Başarılı: {3}, Hatalı: {4}, Bulunamadı: {5}", totalbytes, totalfiles, stopwatch.ElapsedMilliseconds, success, error, not_found));
+        }
+
+        static IEnumerable<string> GetFiles(string path)
+        {
+            Queue<string> queue = new Queue<string>();
+            queue.Enqueue(path);
+            while (queue.Count > 0)
             {
-                if (!entry.Value.SequenceEqual(results[entry.Key]))
+                path = queue.Dequeue();
+                try
                 {
-                    errors++;
+                    foreach (string subDir in Directory.GetDirectories(path))
+                    {
+                        queue.Enqueue(subDir);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine(ex);
+                }
+                string[] files = null;
+                try
+                {
+                    files = Directory.GetFiles(path);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine(ex);
+                }
+                if (files != null)
+                {
+                    for (int i = 0; i < files.Length; i++)
+                    {
+                        yield return files[i];
+                    }
                 }
             }
-
-            MessageBox.Show(String.Format("{0} hatalı sonuç", errors));
         }
 
         private void button5_Click(object sender, EventArgs e)
         {
-            string[] files = Directory.GetFiles(src);
-            string[] recent_files = new string[5];
-
+            string[] recent_files = new string[23];
+            var src_save = src;
+            var dbname = Path.GetFileName(src_save);
+            
             var i = 0;
             Random rnd = new Random();
 
             using (var db = new SimpleStorage.Database(dest))
             {
-                foreach (string f in files)
+                foreach (string f in GetFiles(src_save))
                 {
+                    var _f = f.Substring(src_save.Length + 1);
                     i++;
-                    if (i % 17 == 0)
+                    if (i % 71 == 0)
                     {
-                        db.Remove("files", recent_files[rnd.Next(0, 4)]);
+                        db.Remove(dbname, recent_files[rnd.Next(0, 23)]);
                     }
 
-                    db.Put("files", f, File.ReadAllBytes(f));
+                    db.Put(dbname, _f, File.ReadAllBytes(f));
                     if(i % 3 == 0)
-                        recent_files[i % 5] = f;
+                        recent_files[i % 23] = _f;
                 }
 
                 MessageBox.Show("Finished insert/delete, validating data");
                 i = 0;
                 int k = 0;
-                foreach (string f in files)
+                foreach (string f in GetFiles(src))
                 {
-
-                    byte[] result = db.Get("files", f);
+                    var _f = f.Substring(src_save.Length + 1);
+                    byte[] result = db.Get(dbname, _f);
                     if (result != null && !result.SequenceEqual(File.ReadAllBytes(f)))
                         k++;
                     else

@@ -131,6 +131,26 @@ namespace SimpleStorage
             }
         }
 
+        public byte[] GetOrExpire(string collection, string key, TimeSpan s)
+        {
+            Collection _c = null;
+
+            lock (_collections)
+            {
+                if (!_collections.TryGetValue(collection, out _c))
+                {
+                    _c = new Collection(_data_directory, collection);
+                    _collections[collection] = _c;
+                }
+            }
+
+
+            lock (_c)
+            {
+                return _c.GetOrExpire(key, s);
+            }
+        }
+
         /// <summary>
         /// Removes all keys older than specified time span
         /// </summary>

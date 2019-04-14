@@ -32,12 +32,11 @@ namespace SimpleStorage
                 HASH = 0,
                 KEYSECTOR = 4,
                 DATASECTOR = 8,
-                DATALENGTH = 12,
-                CTIME = 16
+                CTIME = 12
             }
 
             private readonly byte _sizeof_header = 16;
-            private readonly byte _sizeof_entry = 24;
+            private readonly byte _sizeof_entry = 20;
 
             public uint used
             {
@@ -114,6 +113,7 @@ namespace SimpleStorage
             {
                 f.Seek(0, SeekOrigin.Begin);
                 f.Write(_rawData, 0, _rawData.Length);
+                f.Flush();
             }
 
             private int SlotPosition(int slot)
@@ -162,26 +162,13 @@ namespace SimpleStorage
                     .CopyTo(_rawData, SlotPosition(index) + (int)FieldOffsetEntry.DATASECTOR);
             }
 
-            public uint GetDataLength(int index)
+            public Int64 GetDataCreateTime(int index)
             {
                 return BitConverter
-                    .ToUInt32(_rawData, SlotPosition(index) + (int)FieldOffsetEntry.DATALENGTH);
+                    .ToInt64(_rawData, SlotPosition(index) + (int)FieldOffsetEntry.CTIME);
             }
 
-            public void SetDataLength(int index, uint datalength)
-            {
-                BitConverter
-                    .GetBytes(datalength)
-                    .CopyTo(_rawData, SlotPosition(index) + (int)FieldOffsetEntry.DATALENGTH);
-            }
-
-            public long GetDataCreateTime(int index)
-            {
-                return BitConverter
-                    .ToUInt32(_rawData, SlotPosition(index) + (int)FieldOffsetEntry.CTIME);
-            }
-
-            public void SetDataCreateTime(int index, long createTime)
+            public void SetDataCreateTime(int index, Int64 createTime)
             {
                 BitConverter
                     .GetBytes(createTime)
@@ -236,36 +223,44 @@ namespace SimpleStorage
             }
         }
 
-        private class AllocTable
+        private class Storage
         {
             private byte[] _rawData;
             private readonly byte[] _zero = new byte[] { 0, 0, 0, 0 };
+            private readonly byte[] _magic = new byte[] { 83, 84, 65, 76 }; // STAL
             private FileStream f;
+            private FileStream d;
             private uint brk;
 
             /*
              * Binary Format of Allocation Table
              * First 4 byte is interpreted as 32-bit unsigned integer shows current length of data file
-             * Second 4 byte is left blank
+             * Second 4 byte is "STAL" to check for file type
              * an array of free list entries follows;
              * struct entry {
-             *    void * data
-             *    size_t size
+             *    void * data (Uint32)
+             *    size_t size (Uint32)
              * }
              */
 
-            public AllocTable(string alloc_path)
+            public Storage(string alloc_path, string data_path)
             {
+                d = File.Open(data_path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+
                 f = File.Open(alloc_path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
                 // created newly
                 if (f.Length == 0)
                 {
                     _rawData = new byte[16];
+                    _magic.CopyTo(_rawData, 4);
                     
                 } else
                 {
                     _rawData = new byte[f.Length];
                     f.Read(_rawData, 0, (int)f.Length);
+                    var _magic_check = new byte[] { _rawData[4], _rawData[5], _rawData[6], _rawData[7] };
+                    if (!_magic.SequenceEqual(_magic_check))
+                        throw new InvalidDataException("Allocation table is corrupted");
                 }
 
                 brk = BitConverter.ToUInt32(_rawData, 0);
@@ -277,19 +272,25 @@ namespace SimpleStorage
 
             }
 
+            // write changes to underlying FileStream
+            // this does not guarantee that changes reach the disk immediately
             public void Flush()
             {
+                d.Flush();
                 f.Seek(0, SeekOrigin.Begin);
                 BitConverter.GetBytes(brk).CopyTo(_rawData, 0);
                 f.Write(_rawData, 0, _rawData.Length);
+                f.Flush();
             }
 
             public void Dispose()
             {
                 Flush();
                 f.Dispose();
+                d.Dispose();
             }
 
+            // round a number up to nearest power of 2
             private uint RoundUp(uint size)
             {
                 if (size == 0)
@@ -300,7 +301,7 @@ namespace SimpleStorage
                 return p;
             }
 
-            public uint Alloc(uint size)
+            private uint Alloc(uint size)
             {
                 size = RoundUp(size);
                 for(int i = 8; ; i+=8)
@@ -325,11 +326,16 @@ namespace SimpleStorage
 
                 // no hit from free list, allocate new space
                 var v = brk;
+
+                // We can't address more than 4GB of memory using uint32
+                if (UInt32.MaxValue - size < brk)
+                    throw new Exception("Cannot allocate more space");
+
                 brk += size;
                 return v;
             }
 
-            public void Free(uint data, uint length)
+            private void Free(uint data, uint length)
             {
                 length = RoundUp(length);
                 int last_slot = _rawData.Length / 8;
@@ -347,17 +353,48 @@ namespace SimpleStorage
                     }
                 }
             }
+
+            public uint Store(byte[] data)
+            {
+                uint pos = Alloc((uint)data.Length + 4);
+                d.Seek(pos, SeekOrigin.Begin);
+                d.Write(BitConverter.GetBytes((uint)data.Length), 0, 4);
+                d.Write(data, 0, data.Length);
+                Flush();
+                return pos;
+            }
+
+            public void Delete(uint pos)
+            {
+                byte[] buffer = new byte[4];
+                d.Seek(pos, SeekOrigin.Begin);
+                d.Read(buffer, 0, 4);
+                uint len = BitConverter.ToUInt32(buffer, 0);
+                Free(pos, len + 4);
+                Flush();
+            }
+
+            public byte[] Retrieve(uint pos)
+            {
+                byte[] buffer = new byte[4];
+                d.Seek(pos, SeekOrigin.Begin);
+                d.Read(buffer, 0, 4);
+                uint len = BitConverter.ToUInt32(buffer, 0);
+                buffer = new byte[len];
+                d.Read(buffer, 0, (int)len);
+                return buffer;
+            }
+
+            
         }
 
         private Index _index;
-        private AllocTable _alloc;
-        private FileStream _data;
+        private Storage _storage;
 
         public Collection(string db_root, string collection_name)
         {
             _index = new Index(Path.Combine(db_root, collection_name + ".index"));
-            _alloc = new AllocTable(Path.Combine(db_root, collection_name + ".alloc"));
-            _data = File.Open(Path.Combine(db_root, collection_name + ".data"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+            _storage = new Storage(Path.Combine(db_root, collection_name + ".alloc"), Path.Combine(db_root, collection_name + ".data"));
 
 
         }
@@ -378,9 +415,9 @@ namespace SimpleStorage
 
                 if (key_sector != 0 && _index.GetDataCreateTime(i) < ticks)
                 {
-                    RemoveData(key_sector, 256);
+                    _storage.Delete(key_sector);
                     _index.SetKeySector(i, 0);
-                    RemoveData(_index.GetDataSector(i), _index.GetDataLength(i));
+                    _storage.Delete(_index.GetDataSector(i));
                     _index.used -= 1;
                 }
             }
@@ -388,12 +425,11 @@ namespace SimpleStorage
             _index.Flush();
         }
 
+
         public void Remove(string key)
         {
 
-            var keybytes = new byte[256];
-            Encoding.UTF8.GetBytes(key).CopyTo(keybytes, 0);
-
+            var keybytes = Encoding.UTF8.GetBytes(key);
             uint hash = FNV64.Compute(keybytes);
 
             uint pos;
@@ -402,32 +438,11 @@ namespace SimpleStorage
 
             int _pos = (int)pos;
 
-            RemoveData(_index.GetKeySector(_pos), 256);
+            _storage.Delete(_index.GetKeySector(_pos));
             _index.SetKeySector(_pos, 0);
-            RemoveData(_index.GetDataSector(_pos), _index.GetDataLength(_pos));
+            _storage.Delete(_index.GetDataSector(_pos));
             _index.used -= 1;
             _index.Flush();
-        }
-
-        private void RemoveData(uint first_sector, uint size)
-        {
-            _alloc.Free(first_sector, size);
-            _alloc.Flush();
-        }
-
-        private void RetrieveData(uint first_sector, int length, byte[] buffer)
-        {
-            _data.Seek(first_sector, SeekOrigin.Begin);
-            _data.Read(buffer, 0, length);
-        }
-
-        private uint StoreData(byte[] data)
-        {
-            var pos = _alloc.Alloc((uint)data.Length);
-            _alloc.Flush();
-            _data.Seek(pos, SeekOrigin.Begin);
-            _data.Write(data, 0, data.Length);
-            return pos;
         }
 
 
@@ -437,7 +452,6 @@ namespace SimpleStorage
             // key is truncated to 256 bytes when stored
 
             var mask = _index.mask;
-            byte[] buffer = new byte[256];
 
             for (pos = hash&mask; ; pos = (5 * pos + 1) & mask)
             {
@@ -448,13 +462,11 @@ namespace SimpleStorage
                     return false;
                 }
 
-                if (!(hash == _index.GetHash((int)pos)))
-                    continue;
+                var keysector = _index.GetKeySector((int)pos);
 
-                RetrieveData(_index.GetKeySector((int)pos), 256, buffer);
-
-                // this key already exists in collection
-                if (key.SequenceEqual(buffer))
+                if (keysector != 0
+                    && hash == _index.GetHash((int)pos)
+                    && key.SequenceEqual(_storage.Retrieve(keysector)))
                     return true;
 
             }
@@ -470,11 +482,8 @@ namespace SimpleStorage
         /// <returns></returns>
         public bool Put(string key, byte[] data)
         {
-            var keybytes = new byte[256];
-            Encoding.UTF8.GetBytes(key).CopyTo(keybytes, 0);
-
+            var keybytes = Encoding.UTF8.GetBytes(key);
             uint hash = FNV64.Compute(keybytes);
-
 
             if ((double)_index.fill / (double)_index.mask > 0.65)
             {
@@ -486,35 +495,20 @@ namespace SimpleStorage
             {
                 // update existing slot
                 int pos = (int)_pos;
-                _alloc.Free(_index.GetDataSector(pos), _index.GetDataLength(pos));
+                _storage.Delete(_index.GetDataSector(pos));
                 _index.SetDataCreateTime(pos, DateTime.UtcNow.Ticks);
-                _index.SetDataSector(pos, StoreData(data));
-                _index.SetDataLength(pos, (uint)data.Length);
+                _index.SetDataSector(pos, _storage.Store(data));
 
             } else
             {
-                // get key slot skips deleted entries, we should search for reusable slot
-
-                var mask = _index.mask;
-                for(uint __pos = hash&mask; ; __pos = (5 * __pos + 1) & mask)
-                {
-                    var pos = (int)__pos;
-                    if (_index.GetKeySector(pos) == 0)
-                    {
-                        
-                        _index.SetHash(pos, hash);
-                        _index.SetKeySector(pos, StoreData(keybytes));
-                        _index.SetDataCreateTime(pos, DateTime.UtcNow.Ticks);
-                        _index.SetDataSector(pos, StoreData(data));
-                        _index.SetDataLength(pos, (uint)data.Length);
-
-                        break;
-                    }
-                }
+                int pos = (int)_pos;
+                _index.SetHash(pos, hash);
+                _index.SetKeySector(pos, _storage.Store(keybytes));
+                _index.SetDataCreateTime(pos, DateTime.UtcNow.Ticks);
+                _index.SetDataSector(pos, _storage.Store(data));
 
                 _index.fill += 1;
                 _index.used += 1;
-
             }
 
             _index.Flush();
@@ -524,28 +518,53 @@ namespace SimpleStorage
 
         public byte[] Get(string key)
         {
-            var keybytes = new byte[256];
-            Encoding.UTF8.GetBytes(key).CopyTo(keybytes, 0);
-
+            var keybytes = Encoding.UTF8.GetBytes(key);
             uint hash = FNV64.Compute(keybytes);
+
             uint _pos;
 
-            if (!GetKeySlot(hash, keybytes, out _pos))
+            if(!GetKeySlot(hash, keybytes, out _pos))
                 return null;
 
             int pos = (int)_pos;
 
-            var data_length = _index.GetDataLength(pos);
-            byte[] result = new byte[data_length];
-            RetrieveData(_index.GetDataSector(pos), (int)data_length, result);
+            byte[] result = _storage.Retrieve(_index.GetDataSector(pos));
             return result;
+        }
+
+        public byte[] GetOrExpire(string key, TimeSpan s)
+        {
+            var ticks = DateTime.UtcNow.Subtract(s).Ticks;
+            
+            var keybytes = Encoding.UTF8.GetBytes(key);
+            uint hash = FNV64.Compute(keybytes);
+
+            uint _pos;
+
+            if (!GetKeySlot(hash, keybytes, out _pos))
+                return null;
+            var i = (int)_pos;
+
+            if (_index.GetDataCreateTime(i) < ticks)
+            {
+                var key_sector = _index.GetKeySector(i);
+
+                _storage.Delete(key_sector);
+                _index.SetKeySector(i, 0);
+                _storage.Delete(_index.GetDataSector(i));
+                _index.used -= 1;
+                _index.Flush();
+                return null;
+            } else
+            {
+                return _storage.Retrieve(_index.GetDataSector(i));
+            }
         }
 
         public void Dispose()
         {
             _index.Dispose();
-            _alloc.Dispose();
-            _data.Dispose();
+            _storage.Dispose();
         }
     }
 }
